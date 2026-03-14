@@ -111,6 +111,10 @@ pub struct ModelProviderInfo {
     /// Whether this provider supports the Responses API WebSocket transport.
     #[serde(default)]
     pub supports_websockets: bool,
+
+    /// Optional static model ids shown in `/model` when `/models` is
+    /// unavailable or returns an empty list.
+    pub models: Option<Vec<String>>,
 }
 
 impl ModelProviderInfo {
@@ -253,6 +257,7 @@ impl ModelProviderInfo {
             stream_idle_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
+            models: None,
         }
     }
 
@@ -326,6 +331,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         stream_idle_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        models: None,
     }
 }
 

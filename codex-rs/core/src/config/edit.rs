@@ -781,6 +781,74 @@ impl ConfigEditsBuilder {
         self
     }
 
+    pub fn set_model_provider(mut self, model_provider: Option<&str>) -> Self {
+        let segments = if let Some(profile) = self.profile.as_ref() {
+            vec![
+                "profiles".to_string(),
+                profile.clone(),
+                "model_provider".to_string(),
+            ]
+        } else {
+            vec!["model_provider".to_string()]
+        };
+        match model_provider {
+            Some(model_provider) => self.edits.push(ConfigEdit::SetPath {
+                segments,
+                value: value(model_provider),
+            }),
+            None => self.edits.push(ConfigEdit::ClearPath { segments }),
+        }
+        self
+    }
+
+    pub fn upsert_model_provider(
+        mut self,
+        provider_id: &str,
+        name: &str,
+        base_url: &str,
+        wire_api: &str,
+        env_key: &str,
+    ) -> Self {
+        let base = vec!["model_providers".to_string(), provider_id.to_string()];
+
+        let mut name_segments = base.clone();
+        name_segments.push("name".to_string());
+        self.edits.push(ConfigEdit::SetPath {
+            segments: name_segments,
+            value: value(name),
+        });
+
+        let mut base_url_segments = base.clone();
+        base_url_segments.push("base_url".to_string());
+        self.edits.push(ConfigEdit::SetPath {
+            segments: base_url_segments,
+            value: value(base_url),
+        });
+
+        let mut wire_api_segments = base.clone();
+        wire_api_segments.push("wire_api".to_string());
+        self.edits.push(ConfigEdit::SetPath {
+            segments: wire_api_segments,
+            value: value(wire_api),
+        });
+
+        let mut env_key_segments = base;
+        env_key_segments.push("env_key".to_string());
+        self.edits.push(ConfigEdit::SetPath {
+            segments: env_key_segments,
+            value: value(env_key),
+        });
+
+        self
+    }
+
+    pub fn remove_model_provider(mut self, provider_id: &str) -> Self {
+        self.edits.push(ConfigEdit::ClearPath {
+            segments: vec!["model_providers".to_string(), provider_id.to_string()],
+        });
+        self
+    }
+
     pub fn set_service_tier(mut self, service_tier: Option<ServiceTier>) -> Self {
         self.edits.push(ConfigEdit::SetServiceTier { service_tier });
         self

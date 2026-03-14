@@ -16,6 +16,7 @@ use codex_api::ReqwestTransport;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use http::HeaderMap;
 use std::path::PathBuf;
@@ -60,7 +61,7 @@ pub struct ModelsManager {
     auth_manager: Arc<AuthManager>,
     etag: RwLock<Option<String>>,
     cache_manager: ModelsCacheManager,
-    provider: ModelProviderInfo,
+    provider: RwLock<ModelProviderInfo>,
 }
 
 impl ModelsManager {
@@ -95,7 +96,21 @@ impl ModelsManager {
             auth_manager,
             etag: RwLock::new(None),
             cache_manager,
-            provider: ModelProviderInfo::create_openai_provider(),
+            provider: RwLock::new(ModelProviderInfo::create_openai_provider()),
+        }
+    }
+
+    pub async fn set_provider(&self, provider: ModelProviderInfo) {
+        let reset_to_bundled = provider.requires_openai_auth;
+        *self.provider.write().await = provider;
+        *self.etag.write().await = None;
+        if matches!(self.catalog_mode, CatalogMode::Default) {
+            let reset_models = if reset_to_bundled {
+                Self::load_remote_models_from_file().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            *self.remote_models.write().await = reset_models;
         }
     }
 
@@ -245,25 +260,19 @@ impl ModelsManager {
             return Ok(());
         }
 
-        if self.auth_manager.auth_mode() != Some(AuthMode::Chatgpt) {
-            if matches!(
-                refresh_strategy,
-                RefreshStrategy::Offline | RefreshStrategy::OnlineIfUncached
-            ) {
-                self.try_load_cache().await;
-            }
-            return Ok(());
-        }
+        let allow_cache = self.provider.read().await.requires_openai_auth;
 
         match refresh_strategy {
             RefreshStrategy::Offline => {
                 // Only try to load from cache, never fetch
-                self.try_load_cache().await;
+                if allow_cache {
+                    self.try_load_cache().await;
+                }
                 Ok(())
             }
             RefreshStrategy::OnlineIfUncached => {
                 // Try cache first, fall back to online if unavailable
-                if self.try_load_cache().await {
+                if allow_cache && self.try_load_cache().await {
                     info!("models cache: using cached models for OnlineIfUncached");
                     return Ok(());
                 }
@@ -282,19 +291,57 @@ impl ModelsManager {
             codex_otel::start_global_timer("codex.remote_models.fetch_update.duration_ms", &[]);
         let auth = self.auth_manager.auth().await;
         let auth_mode = self.auth_manager.auth_mode();
-        let api_provider = self.provider.to_api_provider(auth_mode)?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
+        let provider = self.provider.read().await.clone();
+        let api_provider = provider.to_api_provider(auth_mode)?;
+        let api_auth = auth_provider_from_auth(auth.clone(), &provider)?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let client = ModelsClient::new(transport, api_provider, api_auth);
 
         let client_version = crate::models_manager::client_version_to_whole();
-        let (models, etag) = timeout(
+        let response = timeout(
             MODELS_REFRESH_TIMEOUT,
             client.list_models(&client_version, HeaderMap::new()),
         )
-        .await
-        .map_err(|_| CodexErr::Timeout)?
-        .map_err(map_api_error)?;
+        .await;
+        let (models, etag) = match response {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => {
+                if let Some(fallback_models) = Self::fallback_models_for_provider(&provider) {
+                    info!(
+                        "models endpoint failed for provider {}; falling back to static provider models",
+                        provider.name
+                    );
+                    self.apply_remote_models(fallback_models).await;
+                    *self.etag.write().await = None;
+                    return Ok(());
+                }
+                return Err(map_api_error(err));
+            }
+            Err(_) => {
+                if let Some(fallback_models) = Self::fallback_models_for_provider(&provider) {
+                    info!(
+                        "models endpoint timed out for provider {}; falling back to static provider models",
+                        provider.name
+                    );
+                    self.apply_remote_models(fallback_models).await;
+                    *self.etag.write().await = None;
+                    return Ok(());
+                }
+                return Err(CodexErr::Timeout);
+            }
+        };
+
+        if models.is_empty()
+            && let Some(fallback_models) = Self::fallback_models_for_provider(&provider)
+        {
+            info!(
+                "models endpoint returned empty list for provider {}; falling back to static provider models",
+                provider.name
+            );
+            self.apply_remote_models(fallback_models).await;
+            *self.etag.write().await = None;
+            return Ok(());
+        }
 
         self.apply_remote_models(models.clone()).await;
         *self.etag.write().await = etag.clone();
@@ -304,24 +351,52 @@ impl ModelsManager {
         Ok(())
     }
 
+    fn fallback_models_for_provider(provider: &ModelProviderInfo) -> Option<Vec<ModelInfo>> {
+        let models = provider.models.as_ref()?;
+        if models.is_empty() {
+            return None;
+        }
+        Some(
+            models
+                .iter()
+                .enumerate()
+                .map(|(index, slug)| Self::fallback_picker_model(slug, index as i32))
+                .collect(),
+        )
+    }
+
+    fn fallback_picker_model(slug: &str, priority: i32) -> ModelInfo {
+        let mut model = model_info::model_info_from_slug(slug);
+        model.display_name = slug.to_string();
+        model.visibility = ModelVisibility::List;
+        model.priority = priority;
+        model.used_fallback_model_metadata = false;
+        model
+    }
+
     async fn get_etag(&self) -> Option<String> {
         self.etag.read().await.clone()
     }
 
     /// Replace the cached remote models and rebuild the derived presets list.
     async fn apply_remote_models(&self, models: Vec<ModelInfo>) {
-        let mut existing_models = Self::load_remote_models_from_file().unwrap_or_default();
-        for model in models {
-            if let Some(existing_index) = existing_models
-                .iter()
-                .position(|existing| existing.slug == model.slug)
-            {
-                existing_models[existing_index] = model;
-            } else {
-                existing_models.push(model);
+        let requires_openai_auth = self.provider.read().await.requires_openai_auth;
+        if requires_openai_auth {
+            let mut existing_models = Self::load_remote_models_from_file().unwrap_or_default();
+            for model in models {
+                if let Some(existing_index) = existing_models
+                    .iter()
+                    .position(|existing| existing.slug == model.slug)
+                {
+                    existing_models[existing_index] = model;
+                } else {
+                    existing_models.push(model);
+                }
             }
+            *self.remote_models.write().await = existing_models;
+        } else {
+            *self.remote_models.write().await = models;
         }
-        *self.remote_models.write().await = existing_models;
     }
 
     fn load_remote_models_from_file() -> Result<Vec<ModelInfo>, std::io::Error> {
@@ -393,7 +468,7 @@ impl ModelsManager {
             auth_manager,
             etag: RwLock::new(None),
             cache_manager,
-            provider,
+            provider: RwLock::new(provider),
         }
     }
 

@@ -193,6 +193,30 @@ pub(crate) enum AppEvent {
         effort: Option<ReasoningEffort>,
     },
 
+    /// Persist the selected model provider to the appropriate config.
+    PersistModelProviderSelection {
+        provider_id: String,
+        model: Option<String>,
+    },
+
+    /// Persist a custom provider definition and switch active profile to use it.
+    PersistCustomProvider {
+        provider_id: String,
+        base_url: String,
+        model: String,
+        env_key: String,
+    },
+
+    /// Remove a custom provider definition by id.
+    RemoveCustomProvider {
+        provider_id: String,
+    },
+
+    /// Replace composer content with a command template.
+    SetComposerDraft {
+        text: String,
+    },
+
     /// Persist the selected personality to the appropriate config.
     PersistPersonalitySelection {
         personality: Personality,

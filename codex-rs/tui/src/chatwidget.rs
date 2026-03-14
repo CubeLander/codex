@@ -4013,6 +4013,9 @@ impl ChatWidget {
             SlashCommand::Model => {
                 self.open_model_popup();
             }
+            SlashCommand::Providers => {
+                self.open_providers_popup();
+            }
             SlashCommand::Fast => {
                 let next_tier = if matches!(self.config.service_tier, Some(ServiceTier::Fast)) {
                     None
@@ -4385,6 +4388,118 @@ impl ChatWidget {
                         user_facing_hint: None,
                     },
                 });
+                self.bottom_pane.drain_pending_submission_state();
+            }
+            SlashCommand::Providers if !trimmed.is_empty() => {
+                let Some((prepared_args, _prepared_elements)) =
+                    self.bottom_pane.prepare_inline_args_submission(false)
+                else {
+                    return;
+                };
+                let parts: Vec<&str> = prepared_args.split_whitespace().collect();
+                let usage = Self::providers_usage_message().to_string();
+                let Some(command) = parts.first().copied() else {
+                    self.add_error_message(usage);
+                    return;
+                };
+                match command {
+                    "list" => {
+                        let mut provider_ids: Vec<_> =
+                            self.config.model_providers.keys().cloned().collect();
+                        provider_ids.sort();
+                        let provider_summary = if provider_ids.is_empty() {
+                            "No providers configured.".to_string()
+                        } else {
+                            provider_ids.join(", ")
+                        };
+                        self.add_info_message(
+                            format!("Registered providers: {provider_summary}"),
+                            Some(format!(
+                                "Current provider: {}",
+                                self.config.model_provider_id
+                            )),
+                        );
+                    }
+                    "use" => {
+                        if parts.len() < 2 || parts.len() > 3 {
+                            self.add_error_message(usage);
+                            return;
+                        }
+                        let provider_id = parts[1].to_string();
+                        if !self.config.model_providers.contains_key(provider_id.as_str()) {
+                            self.add_error_message(format!(
+                                "Provider `{provider_id}` not found. Use /providers list."
+                            ));
+                            return;
+                        }
+                        let model = parts.get(2).map(|value| (*value).to_string());
+                        self.app_event_tx.send(AppEvent::PersistModelProviderSelection {
+                            provider_id,
+                            model,
+                        });
+                    }
+                    "add" => {
+                        if parts.len() < 4 || parts.len() > 5 {
+                            self.add_error_message(usage);
+                            return;
+                        }
+                        let base_url = parts[1].to_string();
+                        let model = parts[2].to_string();
+                        let env_key = parts[3].to_string();
+                        let provider_id = if parts.len() == 5 {
+                            parts[4].to_string()
+                        } else {
+                            Self::derive_provider_id(model.as_str(), base_url.as_str())
+                        };
+                        if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+                            self.add_error_message(
+                                "base_url must start with http:// or https://".to_string(),
+                            );
+                            return;
+                        }
+                        self.app_event_tx.send(AppEvent::PersistCustomProvider {
+                            provider_id,
+                            base_url,
+                            model,
+                            env_key,
+                        });
+                    }
+                    "update" => {
+                        if parts.len() != 5 {
+                            self.add_error_message(usage);
+                            return;
+                        }
+                        let provider_id = parts[1].to_string();
+                        let base_url = parts[2].to_string();
+                        let model = parts[3].to_string();
+                        let env_key = parts[4].to_string();
+                        if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+                            self.add_error_message(
+                                "base_url must start with http:// or https://".to_string(),
+                            );
+                            return;
+                        }
+                        self.app_event_tx.send(AppEvent::PersistCustomProvider {
+                            provider_id,
+                            base_url,
+                            model,
+                            env_key,
+                        });
+                    }
+                    "remove" => {
+                        if parts.len() != 2 {
+                            self.add_error_message(usage);
+                            return;
+                        }
+                        self.app_event_tx.send(AppEvent::RemoveCustomProvider {
+                            provider_id: parts[1].to_string(),
+                        });
+                    }
+                    _ => {
+                        self.add_error_message(usage);
+                        return;
+                    }
+                }
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
@@ -5889,6 +6004,107 @@ impl ChatWidget {
             }
         };
         self.open_model_popup_with_presets(presets);
+    }
+
+    pub(crate) fn open_providers_popup(&mut self) {
+        let mut providers: Vec<_> = self.config.model_providers.iter().collect();
+        providers.sort_by(|(left_id, _), (right_id, _)| left_id.cmp(right_id));
+
+        let current_provider = self.config.model_provider_id.clone();
+        let mut items: Vec<SelectionItem> = vec![SelectionItem {
+            name: "Add custom endpoint (guided)".to_string(),
+            description: Some(
+                "Fill base_url, model_tag, env_key in a prefilled command template.".to_string(),
+            ),
+            actions: vec![Box::new(|tx| {
+                tx.send(AppEvent::SetComposerDraft {
+                    text: "/providers add https://your-endpoint.example.com/v1 your-model-tag YOUR_API_KEY_ENV".to_string(),
+                });
+            })],
+            dismiss_on_select: true,
+            ..Default::default()
+        }];
+        items.extend(providers.into_iter().map(|(provider_id, provider)| {
+            let name = if provider.name.trim().is_empty() {
+                provider_id.clone()
+            } else {
+                format!("{} ({provider_id})", provider.name.trim())
+            };
+            let description = provider
+                .base_url
+                .as_deref()
+                .map(|base_url| format!("base_url: {base_url}"));
+            let selected_provider = provider_id.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistModelProviderSelection {
+                    provider_id: selected_provider.clone(),
+                    model: None,
+                });
+            })];
+            SelectionItem {
+                name,
+                description,
+                is_current: provider_id.as_str() == current_provider,
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            }
+        }));
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Select Model Provider".to_string()),
+            subtitle: Some(
+                "Use /providers use|add|update|remove|list for full endpoint management."
+                    .to_string(),
+            ),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    fn providers_usage_message() -> &'static str {
+        "Usage:\n/providers list\n/providers use <provider_id> [model]\n/providers add <base_url> <model_tag> <env_key> [provider_id]\n/providers update <provider_id> <base_url> <model_tag> <env_key>\n/providers remove <provider_id>"
+    }
+
+    fn derive_provider_id(model: &str, base_url: &str) -> String {
+        let mut model_part = model
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+        model_part = model_part.trim_matches('-').to_string();
+        if model_part.is_empty() {
+            model_part = "custom-model".to_string();
+        }
+
+        let host_part = base_url
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(base_url)
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        if host_part.is_empty() {
+            return format!("custom-{model_part}");
+        }
+        format!("{host_part}-{model_part}")
     }
 
     pub(crate) fn open_personality_popup(&mut self) {
@@ -7513,6 +7729,10 @@ impl ChatWidget {
     /// Set the syntax theme override in the widget's config copy.
     pub(crate) fn set_tui_theme(&mut self, theme: Option<String>) {
         self.config.tui_theme = theme;
+    }
+
+    pub(crate) fn set_config_snapshot(&mut self, config: Config) {
+        self.config = config;
     }
 
     /// Set the model in the widget's config copy and stored collaboration mode.

@@ -487,7 +487,7 @@ async fn refresh_available_models_drops_removed_remote_models() {
 }
 
 #[tokio::test]
-async fn refresh_available_models_skips_network_without_chatgpt_auth() {
+async fn refresh_available_models_fetches_with_non_chatgpt_auth() {
     let server = MockServer::start().await;
     let dynamic_slug = "dynamic-model-only-for-test-noauth";
     let models_mock = mount_models_once(
@@ -514,18 +514,18 @@ async fn refresh_available_models_skips_network_without_chatgpt_auth() {
     manager
         .refresh_available_models(RefreshStrategy::Online)
         .await
-        .expect("refresh should no-op without chatgpt auth");
+        .expect("refresh should succeed with non-chatgpt auth");
     let cached_remote = manager.get_remote_models().await;
     assert!(
-        !cached_remote
+        cached_remote
             .iter()
             .any(|candidate| candidate.slug == dynamic_slug),
-        "remote refresh should be skipped without chatgpt auth"
+        "remote refresh should include provider models with non-chatgpt auth"
     );
     assert_eq!(
         models_mock.requests().len(),
-        0,
-        "no auth should avoid /models requests"
+        1,
+        "non-chatgpt auth should still hit /models for provider-backed model listing"
     );
 }
 

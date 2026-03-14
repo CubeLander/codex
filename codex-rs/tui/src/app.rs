@@ -2453,6 +2453,9 @@ impl App {
                 self.chat_widget.set_model(&model);
                 self.refresh_status_line();
             }
+            AppEvent::SetComposerDraft { text } => {
+                self.chat_widget.set_composer_text(text, Vec::new(), Vec::new());
+            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
                 self.refresh_status_line();
@@ -2855,6 +2858,190 @@ impl App {
                             self.chat_widget
                                 .add_error_message(format!("Failed to save default model: {err}"));
                         }
+                    }
+                }
+            }
+            AppEvent::PersistModelProviderSelection { provider_id, model } => {
+                let profile = self.active_profile.clone();
+                let mut builder = ConfigEditsBuilder::new(&self.config.codex_home);
+                builder = builder
+                    .with_profile(profile.as_deref())
+                    .set_model_provider(Some(provider_id.as_str()));
+                if let Some(selected_model) = model.as_deref() {
+                    builder = builder.set_model(Some(selected_model), None);
+                }
+                match builder.apply().await {
+                    Ok(()) => {
+                        if let Err(err) = self.refresh_in_memory_config_from_disk().await {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to refresh in-memory config after provider selection"
+                            );
+                            self.chat_widget.add_error_message(format!(
+                                "Provider saved, but failed to reload config: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.set_config_snapshot(self.config.clone());
+                            let runtime_provider = self
+                                .config
+                                .model_providers
+                                .get(provider_id.as_str())
+                                .cloned()
+                                .or_else(|| {
+                                    self.chat_widget
+                                        .config_ref()
+                                        .model_providers
+                                        .get(provider_id.as_str())
+                                        .cloned()
+                                });
+                            if let Some(provider) = runtime_provider {
+                                self.server.set_model_provider(provider).await;
+                                self.server
+                                    .list_models(
+                                        codex_core::models_manager::manager::RefreshStrategy::Online,
+                                    )
+                                    .await;
+                            } else {
+                                self.chat_widget.add_error_message(format!(
+                                    "Provider `{provider_id}` saved, but runtime provider definition was not found."
+                                ));
+                            }
+                        }
+                        if let Some(selected_model) = model.as_deref() {
+                            self.chat_widget.set_model(selected_model);
+                        }
+                        let mut message = format!("Model provider saved as {provider_id}.");
+                        if let Some(selected_model) = model.as_deref() {
+                            message.push_str(" Active model set to ");
+                            message.push_str(selected_model);
+                            message.push('.');
+                        }
+                        if let Some(profile) = profile.as_deref() {
+                            message.push_str(" (profile: ");
+                            message.push_str(profile);
+                            message.push(')');
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to persist model provider selection"
+                        );
+                        if let Some(profile) = profile.as_deref() {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save provider for profile `{profile}`: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save default model provider: {err}"
+                            ));
+                        }
+                    }
+                }
+            }
+            AppEvent::PersistCustomProvider {
+                provider_id,
+                base_url,
+                model,
+                env_key,
+            } => {
+                let profile = self.active_profile.as_deref();
+
+                let write_provider_result = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .upsert_model_provider(
+                        provider_id.as_str(),
+                        provider_id.as_str(),
+                        base_url.as_str(),
+                        "responses",
+                        env_key.as_str(),
+                    )
+                    .apply()
+                    .await;
+                if let Err(err) = write_provider_result {
+                    tracing::error!(
+                        error = %err,
+                        "failed to persist custom provider"
+                    );
+                    self.chat_widget.add_error_message(format!(
+                        "Failed to save provider `{provider_id}`: {err}"
+                    ));
+                } else {
+                    let switch_profile_result = ConfigEditsBuilder::new(&self.config.codex_home)
+                        .with_profile(profile)
+                        .set_model_provider(Some(provider_id.as_str()))
+                        .set_model(Some(model.as_str()), None)
+                        .apply()
+                        .await;
+                    if let Err(err) = switch_profile_result {
+                        tracing::error!(
+                            error = %err,
+                            "failed to switch profile to custom provider"
+                        );
+                        self.chat_widget.add_error_message(format!(
+                            "Provider `{provider_id}` was saved, but failed to switch active profile: {err}"
+                        ));
+                    } else {
+                        if let Err(err) = self.refresh_in_memory_config_from_disk().await {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to refresh in-memory config after custom provider update"
+                            );
+                            self.chat_widget.add_error_message(format!(
+                                "Provider `{provider_id}` saved, but failed to reload config: {err}"
+                            ));
+                        } else {
+                            self.chat_widget.set_config_snapshot(self.config.clone());
+                            if let Some(provider) = self
+                                .config
+                                .model_providers
+                                .get(provider_id.as_str())
+                                .cloned()
+                            {
+                                self.server.set_model_provider(provider).await;
+                                self.server
+                                    .list_models(
+                                        codex_core::models_manager::manager::RefreshStrategy::Online,
+                                    )
+                                    .await;
+                            } else {
+                                self.chat_widget.add_error_message(format!(
+                                    "Provider `{provider_id}` saved, but runtime provider definition was not found."
+                                ));
+                            }
+                            self.chat_widget.set_model(model.as_str());
+                        }
+                        self.chat_widget.add_info_message(
+                            format!(
+                                "Provider `{provider_id}` saved. Profile now uses model `{model}` at `{base_url}`."
+                            ),
+                            Some(format!(
+                                "Set API key in your shell profile, e.g. add `export {env_key}=<your_api_key>` to ~/.bashrc"
+                            )),
+                        );
+                    }
+                }
+            }
+            AppEvent::RemoveCustomProvider { provider_id } => {
+                let remove_result = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .remove_model_provider(provider_id.as_str())
+                    .apply()
+                    .await;
+                match remove_result {
+                    Ok(()) => {
+                        self.chat_widget.add_info_message(
+                            format!("Provider `{provider_id}` removed from config."),
+                            None,
+                        );
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            error = %err,
+                            "failed to remove custom provider"
+                        );
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to remove provider `{provider_id}`: {err}"
+                        ));
                     }
                 }
             }

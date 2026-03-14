@@ -283,6 +283,10 @@ impl ThreadManager {
         self.state.models_manager.clone()
     }
 
+    pub async fn set_model_provider(&self, provider: ModelProviderInfo) {
+        self.state.models_manager.set_provider(provider).await;
+    }
+
     pub async fn list_models(
         &self,
         refresh_strategy: crate::models_manager::manager::RefreshStrategy,
