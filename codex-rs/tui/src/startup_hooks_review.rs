@@ -31,7 +31,7 @@ use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
-use codex_app_server_client::AppServerRequestHandle;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use codex_app_server_protocol::HooksListEntry;
 use std::path::PathBuf;
 
@@ -48,7 +48,7 @@ enum StartupHooksReviewSelection {
 }
 
 pub(crate) async fn load_startup_hooks_review_entry(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
 ) -> HooksListEntry {
     let response = match fetch_hooks_list(request_handle, cwd.clone()).await {

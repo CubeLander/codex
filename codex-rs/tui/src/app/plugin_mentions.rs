@@ -12,7 +12,7 @@ use codex_app_server_protocol::PluginSummary;
 use codex_plugin::PluginCapabilitySummary;
 
 pub(super) async fn fetch_plugin_mentions(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
 ) -> Result<Vec<PluginCapabilitySummary>> {
     let response = request_plugin_list(request_handle, cwd).await?;

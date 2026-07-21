@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use codex_app_server_client::AppServerRequestHandle;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use codex_app_server_protocol::AccountLoginCompletedNotification;
 use codex_app_server_protocol::AccountUpdatedNotification;
 use codex_app_server_protocol::AuthMode as ApiAuthMode;
@@ -99,7 +99,7 @@ fn onboarding_request_id() -> codex_app_server_protocol::RequestId {
 }
 
 pub(super) async fn cancel_login_attempt(
-    request_handle: &AppServerRequestHandle,
+    request_handle: &TuiBackendRequestHandle,
     login_id: String,
 ) {
     let _ = request_handle
@@ -230,7 +230,7 @@ pub(crate) struct AuthModeWidget {
     pub error: Arc<RwLock<Option<String>>>,
     pub sign_in_state: Arc<RwLock<SignInState>>,
     pub login_status: LoginStatus,
-    pub app_server_request_handle: AppServerRequestHandle,
+    pub app_server_request_handle: TuiBackendRequestHandle,
     pub forced_login_method: Option<ForcedLoginMethod>,
     pub animations_enabled: bool,
     pub animations_suppressed: Cell<bool>,
@@ -1005,8 +1005,8 @@ impl WidgetRef for AuthModeWidget {
     }
 }
 
-pub(super) fn maybe_open_auth_url_in_browser(request_handle: &AppServerRequestHandle, url: &str) {
-    if !matches!(request_handle, AppServerRequestHandle::InProcess(_)) {
+pub(super) fn maybe_open_auth_url_in_browser(request_handle: &TuiBackendRequestHandle, url: &str) {
+    if !request_handle.uses_embedded_app_server() {
         return;
     }
 
@@ -1080,7 +1080,9 @@ mod tests {
             error: Arc::new(RwLock::new(None)),
             sign_in_state: Arc::new(RwLock::new(SignInState::PickMode)),
             login_status: LoginStatus::NotAuthenticated,
-            app_server_request_handle: AppServerRequestHandle::InProcess(client.request_handle()),
+            app_server_request_handle: TuiBackendRequestHandle::AppServer(
+                AppServerRequestHandle::InProcess(client.request_handle()),
+            ),
             forced_login_method: Some(ForcedLoginMethod::Chatgpt),
             animations_enabled: true,
             animations_suppressed: std::cell::Cell::new(false),

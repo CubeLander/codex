@@ -4,7 +4,7 @@
 //! when a config mutation must be owned by the app server rather than written
 //! to the local `config.toml` directly.
 
-use codex_app_server_client::AppServerRequestHandle;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigEdit;
@@ -145,7 +145,7 @@ pub(crate) fn build_oss_provider_edit(provider: &str) -> ConfigEdit {
 }
 
 pub(crate) async fn write_config_batch(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     edits: Vec<ConfigEdit>,
 ) -> Result<ConfigWriteResponse> {
     let request_id = RequestId::String(format!("tui-config-write-{}", Uuid::new_v4()));
@@ -164,14 +164,14 @@ pub(crate) async fn write_config_batch(
 }
 
 pub(crate) async fn write_trusted_project(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     project_path: &Path,
 ) -> Result<ConfigWriteResponse> {
     write_config_batch(request_handle, vec![trusted_project_edit(project_path)]).await
 }
 
 pub(crate) async fn read_effective_config(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: String,
 ) -> Result<ConfigReadResponse> {
     let request_id = RequestId::String(format!("tui-config-read-{}", Uuid::new_v4()));
@@ -188,7 +188,7 @@ pub(crate) async fn read_effective_config(
 }
 
 pub(crate) async fn write_skill_enabled(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     path: AbsolutePathBuf,
     enabled: bool,
 ) -> Result<()> {

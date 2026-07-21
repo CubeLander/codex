@@ -1,4 +1,5 @@
 use super::AppServerSession;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use codex_app_server_client::AppServerPath;
@@ -107,7 +108,7 @@ impl AppServerSession {
     ) -> Result<T> {
         let request_id = self.next_request_id();
         match self.request_handle() {
-            AppServerRequestHandle::Remote(handle) => {
+            TuiBackendRequestHandle::AppServer(AppServerRequestHandle::Remote(handle)) => {
                 let response = handle
                     .request_json_rpc(JSONRPCRequest {
                         id: request_id,
@@ -122,7 +123,7 @@ impl AppServerSession {
                 })?)
                 .wrap_err_with(|| format!("{method} returned invalid data"))
             }
-            AppServerRequestHandle::InProcess(_) => {
+            TuiBackendRequestHandle::AppServer(AppServerRequestHandle::InProcess(_)) => {
                 let path = AbsolutePathBuf::from_absolute_path_checked(path.as_str())
                     .wrap_err_with(|| format!("invalid local app-server fs path {path}"))?;
                 self.client
@@ -130,6 +131,10 @@ impl AppServerSession {
                     .await
                     .wrap_err_with(|| format!("{method} failed in TUI"))
             }
+            #[cfg(unix)]
+            TuiBackendRequestHandle::CloudStaff(_) => Err(color_eyre::eyre::eyre!(
+                "{method} is unavailable because the CloudStaff backend is not connected"
+            )),
         }
     }
 }

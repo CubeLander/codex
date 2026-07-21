@@ -14,10 +14,11 @@ use crate::session_state::ThreadSessionState;
 use crate::status::StatusAccountDisplay;
 use crate::status::plan_type_display_name;
 use crate::terminal_visualization_instructions::with_terminal_visualization_instructions;
+use crate::tui_backend_client::TuiBackendClient;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
-use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
@@ -115,10 +116,14 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+#[cfg(unix)]
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
+#[cfg(unix)]
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::SubAgentSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -178,7 +183,7 @@ pub(crate) struct AppServerBootstrap {
 }
 
 pub(crate) struct AppServerSession {
-    client: AppServerClient,
+    client: TuiBackendClient,
     next_request_id: i64,
     remote_cwd_override: Option<PathBuf>,
     thread_params_mode: ThreadParamsMode,
@@ -250,7 +255,7 @@ pub(crate) enum TurnPermissionsOverride {
 impl AppServerSession {
     pub(crate) fn new(client: AppServerClient, thread_params_mode: ThreadParamsMode) -> Self {
         Self {
-            client,
+            client: TuiBackendClient::app_server(client),
             next_request_id: 1,
             remote_cwd_override: None,
             thread_params_mode,
@@ -260,6 +265,81 @@ impl AppServerSession {
             managed_new_thread_defaults: None,
             external_agent_config_import_completion_pending: AtomicBool::new(false),
         }
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn connect_cloudstaff_mock(
+        socket_path: &std::path::Path,
+        session_id: String,
+        device_id: String,
+    ) -> std::io::Result<Self> {
+        let client =
+            TuiBackendClient::connect_cloudstaff_mock(socket_path, session_id, device_id).await?;
+        Ok(Self {
+            client,
+            next_request_id: 1,
+            remote_cwd_override: None,
+            thread_params_mode: ThreadParamsMode::Remote,
+            thread_settings_update_supported: false,
+            default_model: Some("cloudstaff-mock".to_string()),
+            available_models: Vec::new(),
+            managed_new_thread_defaults: None,
+            external_agent_config_import_completion_pending: AtomicBool::new(false),
+        })
+    }
+
+    pub(crate) fn is_cloudstaff(&self) -> bool {
+        self.client.is_cloudstaff()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn cloudstaff_bootstrap(&self) -> Option<AppServerBootstrap> {
+        let model = ModelPreset {
+            id: "cloudstaff-mock".to_string(),
+            model: "cloudstaff-mock".to_string(),
+            display_name: "Alice (CloudStaff mock)".to_string(),
+            description: "Backend-owned model projection for the CloudStaff TUI spike".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description: "Managed by Alice's Worker".to_string(),
+            }],
+            supports_personality: false,
+            additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
+            is_default: true,
+            upgrade: None,
+            show_in_picker: false,
+            multi_agent_version: None,
+            availability_nux: None,
+            supported_in_api: true,
+            input_modalities: vec![InputModality::Text],
+        };
+        self.is_cloudstaff().then(|| AppServerBootstrap {
+            duration: Duration::ZERO,
+            account_email: None,
+            auth_mode: None,
+            status_account_display: None,
+            plan_type: None,
+            requires_openai_auth: false,
+            default_model: "cloudstaff-mock".to_string(),
+            feedback_audience: FeedbackAudience::External,
+            has_chatgpt_account: false,
+            available_models: vec![model],
+        })
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn cloudstaff_attached_thread(
+        &self,
+        config: &Config,
+    ) -> Result<AppServerStartedThread> {
+        let response = self
+            .client
+            .cloudstaff_attached_response("cloudstaff-mock".to_string(), config.cwd.clone())
+            .ok_or_else(|| color_eyre::eyre::eyre!("not a CloudStaff session"))?;
+        started_thread_from_resume_response(response, config, ThreadParamsMode::Remote).await
     }
 
     pub(crate) fn with_remote_cwd_override(mut self, remote_cwd_override: Option<PathBuf>) -> Self {
@@ -276,7 +356,7 @@ impl AppServerSession {
     }
 
     pub(crate) fn uses_embedded_app_server(&self) -> bool {
-        matches!(&self.client, AppServerClient::InProcess(_))
+        self.client.uses_embedded_app_server()
     }
 
     pub(crate) fn codex_home_path(
@@ -287,10 +367,7 @@ impl AppServerSession {
     }
 
     pub(crate) fn server_version(&self) -> Option<&str> {
-        let AppServerClient::Remote(client) = &self.client else {
-            return None;
-        };
-        client.server_version()
+        self.client.server_version()
     }
 
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
@@ -858,7 +935,9 @@ impl AppServerSession {
                 request_id,
                 params: TurnStartParams {
                     thread_id: thread_id.to_string(),
-                    client_user_message_id: None,
+                    client_user_message_id: self
+                        .is_cloudstaff()
+                        .then(|| format!("cloudstaff-command-{}", Uuid::new_v4())),
                     input: items,
                     responsesapi_client_metadata: None,
                     additional_context: None,
@@ -1208,7 +1287,7 @@ impl AppServerSession {
         self.client.shutdown().await
     }
 
-    pub(crate) fn request_handle(&self) -> AppServerRequestHandle {
+    pub(crate) fn request_handle(&self) -> TuiBackendRequestHandle {
         self.client.request_handle()
     }
 
@@ -1220,7 +1299,7 @@ impl AppServerSession {
 }
 
 pub(crate) async fn start_thread_with_request_handle(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     config: Config,
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<PathBuf>,

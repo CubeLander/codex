@@ -724,7 +724,7 @@ impl App {
 }
 
 pub(super) async fn fetch_all_mcp_server_statuses(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     detail: McpServerStatusDetail,
     thread_id: Option<ThreadId>,
 ) -> Result<Vec<McpServerStatus>> {
@@ -758,7 +758,7 @@ pub(super) async fn fetch_all_mcp_server_statuses(
 }
 
 pub(super) async fn fetch_account_rate_limits(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
 ) -> Result<GetAccountRateLimitsResponse> {
     let request_id = RequestId::String(format!("account-rate-limits-{}", Uuid::new_v4()));
     request_handle
@@ -771,7 +771,7 @@ pub(super) async fn fetch_account_rate_limits(
 }
 
 pub(super) async fn fetch_account_token_activity(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
 ) -> Result<codex_app_server_protocol::GetAccountTokenUsageResponse> {
     let request_id = RequestId::String(format!("account-token-usage-{}", Uuid::new_v4()));
     request_handle
@@ -784,7 +784,7 @@ pub(super) async fn fetch_account_token_activity(
 }
 
 pub(super) async fn consume_rate_limit_reset_credit_request(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     idempotency_key: String,
     credit_id: Option<String>,
 ) -> Result<ConsumeAccountRateLimitResetCreditResponse> {
@@ -802,7 +802,7 @@ pub(super) async fn consume_rate_limit_reset_credit_request(
 }
 
 pub(super) async fn fetch_workspace_messages(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
 ) -> Result<codex_app_server_protocol::GetWorkspaceMessagesResponse> {
     let request_id = RequestId::String(format!("workspace-messages-{}", Uuid::new_v4()));
     request_handle
@@ -815,7 +815,7 @@ pub(super) async fn fetch_workspace_messages(
 }
 
 pub(super) async fn send_add_credits_nudge_email(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     credit_type: AddCreditsNudgeCreditType,
 ) -> Result<codex_app_server_protocol::AddCreditsNudgeEmailStatus> {
     let request_id = RequestId::String(format!("add-credits-nudge-{}", Uuid::new_v4()));
@@ -831,7 +831,7 @@ pub(super) async fn send_add_credits_nudge_email(
 }
 
 pub(super) async fn fetch_skills_list(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
 ) -> Result<SkillsListResponse> {
     let request_id = RequestId::String(format!("startup-skills-list-{}", Uuid::new_v4()));
@@ -850,7 +850,7 @@ pub(super) async fn fetch_skills_list(
 }
 
 pub(super) async fn fetch_connectors_list(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     force_refetch: bool,
     thread_id: Option<String>,
 ) -> Result<ConnectorsSnapshot> {
@@ -873,7 +873,7 @@ pub(super) async fn fetch_connectors_list(
 }
 
 pub(super) async fn fetch_plugins_list(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
 ) -> Result<PluginListResponse> {
     let mut response = request_plugin_list(request_handle, cwd)
@@ -884,7 +884,7 @@ pub(super) async fn fetch_plugins_list(
 }
 
 pub(super) async fn fetch_additional_plugin_remote_sections(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
     plugin_sharing_enabled: bool,
     remote_plugin_enabled: bool,
@@ -1000,7 +1000,7 @@ pub(super) fn hide_cli_only_plugin_marketplaces(response: &mut PluginListRespons
 }
 
 pub(super) async fn request_plugin_list(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
 ) -> Result<PluginListResponse> {
     request_plugin_list_with_marketplace_kinds(request_handle, cwd, /*marketplace_kinds*/ None)
@@ -1008,7 +1008,7 @@ pub(super) async fn request_plugin_list(
 }
 
 pub(super) async fn request_plugin_list_for_kinds(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
     marketplace_kinds: Vec<PluginListMarketplaceKind>,
 ) -> Result<PluginListResponse> {
@@ -1016,7 +1016,7 @@ pub(super) async fn request_plugin_list_for_kinds(
 }
 
 async fn request_plugin_list_with_marketplace_kinds(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
     marketplace_kinds: Option<Vec<PluginListMarketplaceKind>>,
 ) -> Result<PluginListResponse> {
@@ -1035,7 +1035,7 @@ async fn request_plugin_list_with_marketplace_kinds(
 }
 
 pub(super) async fn fetch_plugin_detail(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     params: PluginReadParams,
 ) -> Result<PluginReadResponse> {
     let request_id = RequestId::String(format!("plugin-read-{}", Uuid::new_v4()));
@@ -1046,7 +1046,7 @@ pub(super) async fn fetch_plugin_detail(
 }
 
 pub(super) async fn fetch_marketplace_add(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
     source: String,
 ) -> Result<MarketplaceAddResponse> {
@@ -1094,7 +1094,7 @@ fn marketplace_add_source_for_request(cwd: &std::path::Path, source: String) -> 
 }
 
 pub(super) async fn fetch_marketplace_remove(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     marketplace_name: String,
 ) -> Result<MarketplaceRemoveResponse> {
     let request_id = RequestId::String(format!("marketplace-remove-{}", Uuid::new_v4()));
@@ -1108,7 +1108,7 @@ pub(super) async fn fetch_marketplace_remove(
 }
 
 pub(super) async fn fetch_marketplace_upgrade(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     marketplace_name: Option<String>,
 ) -> Result<MarketplaceUpgradeResponse> {
     let request_id = RequestId::String(format!("marketplace-upgrade-{}", Uuid::new_v4()));
@@ -1121,7 +1121,7 @@ pub(super) async fn fetch_marketplace_upgrade(
         .wrap_err("marketplace/upgrade failed in TUI")
 }
 pub(super) async fn fetch_plugin_install(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     location: PluginLocation,
     plugin_name: String,
 ) -> Result<PluginInstallResponse> {
@@ -1141,7 +1141,7 @@ pub(super) async fn fetch_plugin_install(
 }
 
 pub(super) async fn fetch_plugin_uninstall(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     plugin_id: String,
 ) -> Result<PluginUninstallResponse> {
     let request_id = RequestId::String(format!("plugin-uninstall-{}", Uuid::new_v4()));
@@ -1155,7 +1155,7 @@ pub(super) async fn fetch_plugin_uninstall(
 }
 
 pub(super) async fn write_plugin_enabled(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     plugin_id: String,
     enabled: bool,
 ) -> Result<ConfigWriteResponse> {
@@ -1176,7 +1176,7 @@ pub(super) async fn write_plugin_enabled(
 }
 
 pub(super) async fn write_hook_enabled(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     key: String,
     enabled: bool,
 ) -> Result<ConfigWriteResponse> {
@@ -1228,7 +1228,7 @@ pub(super) fn build_feedback_upload_params(
 }
 
 pub(super) async fn fetch_feedback_upload(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     params: FeedbackUploadParams,
 ) -> Result<FeedbackUploadResponse> {
     let request_id = RequestId::String(format!("feedback-upload-{}", Uuid::new_v4()));

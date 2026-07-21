@@ -21,6 +21,7 @@ use additional_dirs::add_dir_warning_message;
 use app::App;
 pub use app::AppExitInfo;
 pub use app::ExitReason;
+use app::StartupSession;
 use app_server_session::AppServerSession;
 use app_server_session::ThreadParamsMode;
 use codex_app_server_client::AppServerClient;
@@ -74,6 +75,8 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(unix)]
+use std::time::Duration;
 use std::time::Instant;
 pub use token_usage::TokenUsage;
 use tracing::error;
@@ -103,6 +106,8 @@ mod chatwidget;
 mod cli;
 mod clipboard_copy;
 mod clipboard_paste;
+#[cfg(unix)]
+mod cloudstaff_mock_backend;
 mod collaboration_modes;
 mod color;
 mod config_update;
@@ -188,6 +193,7 @@ mod token_usage;
 mod tooltips;
 mod transcript_reflow;
 mod tui;
+mod tui_backend_client;
 mod ui_consts;
 pub(crate) mod update_action;
 pub use update_action::UpdateAction;
@@ -1293,6 +1299,85 @@ pub async fn run_main(
     .map_err(|err| std::io::Error::other(err.to_string()))
 }
 
+/// Runs the isolated CloudStaff UDS/JSONL spike without constructing an
+/// embedded app-server, provider session, state database, or MCP runtime.
+#[cfg(unix)]
+pub async fn run_cloudstaff_mock(
+    socket_path: PathBuf,
+    session_id: String,
+    device_id: String,
+) -> color_eyre::Result<AppExitInfo> {
+    color_eyre::install()?;
+    let config = ConfigBuilder::default()
+        .harness_overrides(ConfigOverrides {
+            model: Some("cloudstaff-mock".to_string()),
+            ..Default::default()
+        })
+        .build()
+        .await?;
+    let app_server =
+        AppServerSession::connect_cloudstaff_mock(&socket_path, session_id, device_id).await?;
+    let bootstrap = app_server
+        .cloudstaff_bootstrap()
+        .ok_or_else(|| color_eyre::eyre::eyre!("CloudStaff bootstrap is unavailable"))?;
+    let attached = app_server.cloudstaff_attached_thread(&config).await?;
+
+    let mut initialized_terminal = tui::init()?;
+    initialized_terminal.terminal.clear()?;
+    let mut tui = Tui::new(
+        initialized_terminal.terminal,
+        initialized_terminal.enhanced_keys_supported,
+        initialized_terminal.stderr_guard,
+    );
+    let mut terminal_restore_guard = TerminalRestoreGuard::new();
+    tui.set_alt_screen_enabled(determine_alt_screen_mode(
+        /*no_alt_screen*/ false,
+        config.tui_alternate_screen,
+    ));
+    let cwd = config.cwd.to_path_buf();
+    let absolute_socket = AbsolutePathBuf::relative_to_current_dir(&socket_path)?;
+    let result = App::run(
+        &mut tui,
+        app_server,
+        config,
+        cwd,
+        Vec::new(),
+        ConfigOverrides::default(),
+        LoaderOverrides::default(),
+        CloudConfigBundleLoader::default(),
+        /*initial_prompt*/ None,
+        Vec::new(),
+        StartupSession::Attached(attached),
+        codex_feedback::CodexFeedback::new(),
+        /*is_first_run*/ false,
+        /*should_prompt_windows_sandbox_nux_at_startup*/ false,
+        AppServerTarget::Remote {
+            endpoint: RemoteAppServerEndpoint::UnixSocket {
+                socket_path: absolute_socket,
+            },
+        },
+        /*state_db*/ None,
+        Arc::new(EnvironmentManager::without_environments()),
+        Duration::ZERO,
+        Some(bootstrap),
+        /*startup_hooks_browser*/ None,
+    )
+    .await;
+    terminal_restore_guard.restore_silently();
+    result
+}
+
+#[cfg(not(unix))]
+pub async fn run_cloudstaff_mock(
+    _socket_path: PathBuf,
+    _session_id: String,
+    _device_id: String,
+) -> color_eyre::Result<AppExitInfo> {
+    Err(color_eyre::eyre::eyre!(
+        "the CloudStaff UDS spike is available only on Unix platforms"
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_ratatui_app(
     cli: Cli,
@@ -1794,7 +1879,7 @@ async fn run_ratatui_app(
         cloud_config_bundle,
         prompt,
         images,
-        session_selection,
+        StartupSession::AppServer(session_selection),
         feedback,
         should_show_trust_screen, // Proxy to: is it a first run in this directory?
         should_prompt_windows_sandbox_nux_at_startup,

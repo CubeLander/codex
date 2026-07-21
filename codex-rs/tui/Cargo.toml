@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "md-events"
 path = "src/bin/md-events.rs"
 
+[[bin]]
+name = "cloudstaff-codex-tui"
+path = "src/bin/cloudstaff-codex-tui.rs"
+
 [lib]
 name = "codex_tui"
 path = "src/lib.rs"

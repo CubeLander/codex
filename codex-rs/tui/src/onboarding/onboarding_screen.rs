@@ -10,8 +10,8 @@
 //! editing a non-empty API-key field, while control/alt chords remain available
 //! as explicit exit shortcuts.
 
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use codex_app_server_client::AppServerEvent;
-use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_protocol::ServerNotification;
 use codex_exec_server::LOCAL_FS;
 use codex_git_utils::resolve_root_git_project_for_trust;
@@ -84,7 +84,7 @@ pub(crate) struct OnboardingScreenArgs {
     pub show_trust_screen: bool,
     pub show_login_screen: bool,
     pub login_status: LoginStatus,
-    pub app_server_request_handle: Option<AppServerRequestHandle>,
+    pub app_server_request_handle: Option<TuiBackendRequestHandle>,
     pub config: Config,
 }
 
@@ -576,7 +576,7 @@ pub(crate) async fn run_onboarding_app(
 
 async fn persist_selected_trust(
     onboarding_screen: &mut OnboardingScreen,
-    request_handle: Option<AppServerRequestHandle>,
+    request_handle: Option<TuiBackendRequestHandle>,
 ) -> bool {
     let Some((trust_step_index, trust_target)) = onboarding_screen
         .steps

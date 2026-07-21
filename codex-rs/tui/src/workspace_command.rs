@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codex_app_server_client::AppServerRequestHandle;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecParams;
 use codex_app_server_protocol::CommandExecResponse;
@@ -151,12 +151,12 @@ pub(crate) trait WorkspaceCommandExecutor: Send + Sync {
 /// Workspace command runner that forwards every request to the active app-server.
 #[derive(Clone)]
 pub(crate) struct AppServerWorkspaceCommandRunner {
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
 }
 
 impl AppServerWorkspaceCommandRunner {
     /// Creates a runner from an app-server request handle owned by the current TUI session.
-    pub(crate) fn new(request_handle: AppServerRequestHandle) -> Self {
+    pub(crate) fn new(request_handle: TuiBackendRequestHandle) -> Self {
         Self { request_handle }
     }
 }

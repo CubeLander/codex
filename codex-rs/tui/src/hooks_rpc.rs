@@ -1,4 +1,4 @@
-use codex_app_server_client::AppServerRequestHandle;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
@@ -22,7 +22,7 @@ pub(crate) struct HookTrustUpdate {
 }
 
 pub(crate) async fn fetch_hooks_list(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     cwd: PathBuf,
 ) -> Result<HooksListResponse> {
     let request_id = RequestId::String(format!("hooks-list-{}", Uuid::new_v4()));
@@ -56,7 +56,7 @@ pub(crate) fn hook_needs_review(hook: &HookMetadata) -> bool {
 }
 
 pub(crate) async fn write_hook_trusts(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     trust_updates: Vec<HookTrustUpdate>,
 ) -> Result<ConfigWriteResponse> {
     let request_id = RequestId::String(format!("hooks-config-write-{}", Uuid::new_v4()));
@@ -92,7 +92,7 @@ pub(crate) async fn write_hook_trusts(
 }
 
 pub(crate) async fn write_hook_trust(
-    request_handle: AppServerRequestHandle,
+    request_handle: TuiBackendRequestHandle,
     key: String,
     current_hash: String,
 ) -> Result<ConfigWriteResponse> {

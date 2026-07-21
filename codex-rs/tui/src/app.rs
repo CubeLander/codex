@@ -81,12 +81,12 @@ use crate::token_usage::TokenUsage;
 use crate::transcript_reflow::TranscriptReflowState;
 use crate::tui;
 use crate::tui::TuiEvent;
+use crate::tui_backend_client::TuiBackendRequestHandle;
 use crate::update_action::UpdateAction;
 use crate::version::CODEX_CLI_VERSION;
 use crate::workspace_command::AppServerWorkspaceCommandRunner;
 use crate::workspace_command::WorkspaceCommandRunner;
 use codex_ansi_escape::ansi_escape_line;
-use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AskForApproval;
@@ -424,6 +424,11 @@ impl AppExitInfo {
 pub(crate) enum AppRunControl {
     Continue,
     Exit(ExitReason),
+}
+
+pub(crate) enum StartupSession {
+    AppServer(SessionSelection),
+    Attached(AppServerStartedThread),
 }
 
 #[derive(Debug, Clone)]
@@ -774,7 +779,7 @@ impl App {
         cloud_config_bundle: CloudConfigBundleLoader,
         initial_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
-        session_selection: SessionSelection,
+        startup_session: StartupSession,
         feedback: codex_feedback::CodexFeedback,
         is_first_run: bool,
         should_prompt_windows_sandbox_nux_at_startup: bool,
@@ -804,8 +809,8 @@ impl App {
         };
         let bootstrap_ms = bootstrap.duration.as_millis();
         if matches!(
-            &session_selection,
-            SessionSelection::StartFresh | SessionSelection::Exit
+            &startup_session,
+            StartupSession::AppServer(SessionSelection::StartFresh | SessionSelection::Exit)
         ) {
             apply_managed_new_thread_defaults(
                 &mut config,
@@ -872,44 +877,52 @@ impl App {
 
         let status_line_invalid_items_warned = Arc::new(AtomicBool::new(false));
         let terminal_title_invalid_items_warned = Arc::new(AtomicBool::new(false));
-        let workspace_command_runner: WorkspaceCommandRunner = Arc::new(
-            AppServerWorkspaceCommandRunner::new(app_server.request_handle()),
-        );
+        let workspace_command_runner: Option<WorkspaceCommandRunner> =
+            (!app_server.is_cloudstaff()).then(|| {
+                Arc::new(AppServerWorkspaceCommandRunner::new(
+                    app_server.request_handle(),
+                )) as WorkspaceCommandRunner
+            });
         let runtime_model_provider_started_at = Instant::now();
-        let runtime_model_provider_base_url =
-            resolve_runtime_model_provider_base_url(&config.model_provider).await;
+        let runtime_model_provider_base_url = if app_server.is_cloudstaff() {
+            None
+        } else {
+            resolve_runtime_model_provider_base_url(&config.model_provider).await
+        };
         let runtime_model_provider_ms = runtime_model_provider_started_at.elapsed().as_millis();
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
-        let wait_for_initial_session_configured =
-            Self::should_wait_for_initial_session(&session_selection);
-        let should_prompt_for_paused_goal_after_startup_resume =
-            Self::should_prompt_for_paused_goal_after_startup_resume(
-                &session_selection,
-                &initial_prompt,
-                &initial_images,
-            );
+        let wait_for_initial_session_configured = match &startup_session {
+            StartupSession::AppServer(selection) => {
+                Self::should_wait_for_initial_session(selection)
+            }
+            StartupSession::Attached(_) => false,
+        };
+        let should_prompt_for_paused_goal_after_startup_resume = match &startup_session {
+            StartupSession::AppServer(selection) => {
+                Self::should_prompt_for_paused_goal_after_startup_resume(
+                    selection,
+                    &initial_prompt,
+                    &initial_images,
+                )
+            }
+            StartupSession::Attached(_) => false,
+        };
         let thread_and_widget_started_at = Instant::now();
         let pending_startup_thread_start = matches!(
-            &session_selection,
-            SessionSelection::StartFresh | SessionSelection::Exit
+            &startup_session,
+            StartupSession::AppServer(SessionSelection::StartFresh | SessionSelection::Exit)
         );
-        let (mut chat_widget, initial_started_thread) = match session_selection {
-            SessionSelection::StartFresh | SessionSelection::Exit => {
-                spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
-                // Count a startup tooltip once the initial chat widget can render it.
-                let startup_tooltip_override =
-                    prepare_startup_tooltip_override(&mut config, &available_models, is_first_run)
-                        .await;
+        let (mut chat_widget, initial_started_thread) = match startup_session {
+            StartupSession::Attached(started) => {
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
-                    workspace_command_runner: Some(workspace_command_runner.clone()),
+                    workspace_command_runner: workspace_command_runner.clone(),
                     initial_user_message: crate::chatwidget::create_initial_user_message(
                         initial_prompt.clone(),
                         initial_images.clone(),
-                        // CLI prompt args are plain strings, so they don't provide element ranges.
                         Vec::new(),
                     ),
                     enhanced_keys_supported,
@@ -922,93 +935,133 @@ impl App {
                     runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
                     initial_plan_type,
                     model: Some(model.clone()),
-                    startup_tooltip_override,
-                    status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
-                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
-                        .clone(),
-                    session_telemetry: session_telemetry.clone(),
-                };
-                let mut chat_widget = ChatWidget::new_with_app_event(init);
-                chat_widget.set_queue_submissions_until_session_configured(/*queue*/ true);
-                (chat_widget, None)
-            }
-            SessionSelection::Resume(target_session) => {
-                let model_settings = config_persistence::resume_model_settings_for_overrides(
-                    &config,
-                    &harness_overrides,
-                );
-                let resumed = app_server
-                    .resume_thread(config.clone(), target_session.thread_id, model_settings)
-                    .await
-                    .map_err(|err| session_start_error("resume", &target_session, err))?;
-                let init = crate::chatwidget::ChatWidgetInit {
-                    config: config.clone(),
-                    frame_requester: tui.frame_requester(),
-                    app_event_tx: app_event_tx.clone(),
-                    workspace_command_runner: Some(workspace_command_runner.clone()),
-                    initial_user_message: crate::chatwidget::create_initial_user_message(
-                        initial_prompt.clone(),
-                        initial_images.clone(),
-                        // CLI prompt args are plain strings, so they don't provide element ranges.
-                        Vec::new(),
-                    ),
-                    enhanced_keys_supported,
-                    has_chatgpt_account,
-                    has_codex_backend_auth,
-                    model_catalog: model_catalog.clone(),
-                    feedback: feedback.clone(),
-                    is_first_run,
-                    status_account_display: status_account_display.clone(),
-                    runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
-                    initial_plan_type,
-                    model: config.model.clone(),
                     startup_tooltip_override: None,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
                         .clone(),
                     session_telemetry: session_telemetry.clone(),
                 };
-                (ChatWidget::new_with_app_event(init), Some(resumed))
+                (ChatWidget::new_with_app_event(init), Some(started))
             }
-            SessionSelection::Fork(target_session) => {
-                session_telemetry.counter(
-                    "codex.thread.fork",
-                    /*inc*/ 1,
-                    &[("source", "cli_subcommand")],
-                );
-                let forked = app_server
-                    .fork_thread(config.clone(), target_session.thread_id)
-                    .await
-                    .map_err(|err| session_start_error("fork", &target_session, err))?;
-                let init = crate::chatwidget::ChatWidgetInit {
-                    config: config.clone(),
-                    frame_requester: tui.frame_requester(),
-                    app_event_tx: app_event_tx.clone(),
-                    workspace_command_runner: Some(workspace_command_runner.clone()),
-                    initial_user_message: crate::chatwidget::create_initial_user_message(
-                        initial_prompt.clone(),
-                        initial_images.clone(),
-                        // CLI prompt args are plain strings, so they don't provide element ranges.
-                        Vec::new(),
-                    ),
-                    enhanced_keys_supported,
-                    has_chatgpt_account,
-                    has_codex_backend_auth,
-                    model_catalog: model_catalog.clone(),
-                    feedback: feedback.clone(),
-                    is_first_run,
-                    status_account_display: status_account_display.clone(),
-                    runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
-                    initial_plan_type,
-                    model: config.model.clone(),
-                    startup_tooltip_override: None,
-                    status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
-                    terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
-                        .clone(),
-                    session_telemetry: session_telemetry.clone(),
-                };
-                (ChatWidget::new_with_app_event(init), Some(forked))
-            }
+            StartupSession::AppServer(session_selection) => match session_selection {
+                SessionSelection::StartFresh | SessionSelection::Exit => {
+                    spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
+                    // Count a startup tooltip once the initial chat widget can render it.
+                    let startup_tooltip_override = prepare_startup_tooltip_override(
+                        &mut config,
+                        &available_models,
+                        is_first_run,
+                    )
+                    .await;
+                    let init = crate::chatwidget::ChatWidgetInit {
+                        config: config.clone(),
+                        frame_requester: tui.frame_requester(),
+                        app_event_tx: app_event_tx.clone(),
+                        workspace_command_runner: workspace_command_runner.clone(),
+                        initial_user_message: crate::chatwidget::create_initial_user_message(
+                            initial_prompt.clone(),
+                            initial_images.clone(),
+                            // CLI prompt args are plain strings, so they don't provide element ranges.
+                            Vec::new(),
+                        ),
+                        enhanced_keys_supported,
+                        has_chatgpt_account,
+                        has_codex_backend_auth,
+                        model_catalog: model_catalog.clone(),
+                        feedback: feedback.clone(),
+                        is_first_run,
+                        status_account_display: status_account_display.clone(),
+                        runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
+                        initial_plan_type,
+                        model: Some(model.clone()),
+                        startup_tooltip_override,
+                        status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                        terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                            .clone(),
+                        session_telemetry: session_telemetry.clone(),
+                    };
+                    let mut chat_widget = ChatWidget::new_with_app_event(init);
+                    chat_widget.set_queue_submissions_until_session_configured(/*queue*/ true);
+                    (chat_widget, None)
+                }
+                SessionSelection::Resume(target_session) => {
+                    let model_settings = config_persistence::resume_model_settings_for_overrides(
+                        &config,
+                        &harness_overrides,
+                    );
+                    let resumed = app_server
+                        .resume_thread(config.clone(), target_session.thread_id, model_settings)
+                        .await
+                        .map_err(|err| session_start_error("resume", &target_session, err))?;
+                    let init = crate::chatwidget::ChatWidgetInit {
+                        config: config.clone(),
+                        frame_requester: tui.frame_requester(),
+                        app_event_tx: app_event_tx.clone(),
+                        workspace_command_runner: workspace_command_runner.clone(),
+                        initial_user_message: crate::chatwidget::create_initial_user_message(
+                            initial_prompt.clone(),
+                            initial_images.clone(),
+                            // CLI prompt args are plain strings, so they don't provide element ranges.
+                            Vec::new(),
+                        ),
+                        enhanced_keys_supported,
+                        has_chatgpt_account,
+                        has_codex_backend_auth,
+                        model_catalog: model_catalog.clone(),
+                        feedback: feedback.clone(),
+                        is_first_run,
+                        status_account_display: status_account_display.clone(),
+                        runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
+                        initial_plan_type,
+                        model: config.model.clone(),
+                        startup_tooltip_override: None,
+                        status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                        terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                            .clone(),
+                        session_telemetry: session_telemetry.clone(),
+                    };
+                    (ChatWidget::new_with_app_event(init), Some(resumed))
+                }
+                SessionSelection::Fork(target_session) => {
+                    session_telemetry.counter(
+                        "codex.thread.fork",
+                        /*inc*/ 1,
+                        &[("source", "cli_subcommand")],
+                    );
+                    let forked = app_server
+                        .fork_thread(config.clone(), target_session.thread_id)
+                        .await
+                        .map_err(|err| session_start_error("fork", &target_session, err))?;
+                    let init = crate::chatwidget::ChatWidgetInit {
+                        config: config.clone(),
+                        frame_requester: tui.frame_requester(),
+                        app_event_tx: app_event_tx.clone(),
+                        workspace_command_runner: workspace_command_runner.clone(),
+                        initial_user_message: crate::chatwidget::create_initial_user_message(
+                            initial_prompt.clone(),
+                            initial_images.clone(),
+                            // CLI prompt args are plain strings, so they don't provide element ranges.
+                            Vec::new(),
+                        ),
+                        enhanced_keys_supported,
+                        has_chatgpt_account,
+                        has_codex_backend_auth,
+                        model_catalog: model_catalog.clone(),
+                        feedback: feedback.clone(),
+                        is_first_run,
+                        status_account_display: status_account_display.clone(),
+                        runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
+                        initial_plan_type,
+                        model: config.model.clone(),
+                        startup_tooltip_override: None,
+                        status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
+                        terminal_title_invalid_items_warned: terminal_title_invalid_items_warned
+                            .clone(),
+                        session_telemetry: session_telemetry.clone(),
+                    };
+                    (ChatWidget::new_with_app_event(init), Some(forked))
+                }
+            },
         };
         chat_widget.remote_connection = remote_connection;
         let thread_and_widget_ms = thread_and_widget_started_at.elapsed().as_millis();
@@ -1031,7 +1084,7 @@ See the Codex keymap documentation for supported actions and examples."
             session_telemetry: session_telemetry.clone(),
             app_event_tx,
             chat_widget,
-            workspace_command_runner: Some(workspace_command_runner),
+            workspace_command_runner,
             config,
             launch_cwd,
             state_db,
@@ -1141,7 +1194,9 @@ See the Codex keymap documentation for supported actions and examples."
             event_stream_ms = %event_stream_started_at.elapsed().as_millis(),
             "tui startup initial frame scheduled"
         );
-        app.refresh_startup_skills(&app_server);
+        if !app_server.is_cloudstaff() {
+            app.refresh_startup_skills(&app_server);
+        }
         // Kick off a non-blocking rate-limit prefetch so the first `/status`
         // already has data and available reset credits can be surfaced, without
         // delaying the initial frame render.
